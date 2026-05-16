@@ -1,4 +1,4 @@
-name: FreeMCHost Auto Renew
+name: MCHost Auto Renew
 on:
   schedule:
     - cron: '0 */3 * * *'
@@ -66,6 +66,6 @@ jobs:
         #uses: actions/upload-artifact@v4
         #if: always() # 无论前面的步骤成功还是失败，都执行此步骤
         #with:
-          #name: freemchost-debug-screenshots
+          #name: MCHost-debug-screenshots
           #path: "*.png"
           #retention-days: 1 # 截图保留天数
