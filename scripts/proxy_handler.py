@@ -16,7 +16,7 @@ LISTEN_HOST = "127.0.0.1"
 LISTEN_PORT = 8080
 
 # ============================================================
-# Protocol Parsers (保持不变)
+# Protocol Parsers
 # ============================================================
 def parse_socks5(parsed):
     outbound = {"type": "socks", "tag": "proxy", "server": parsed.hostname, "server_port": parsed.port or 1080, "version": "5"}
@@ -76,6 +76,51 @@ def parse_vless(parsed, params):
         outbound["transport"] = transport
     return outbound
 
+def parse_trojan(parsed, params):
+    outbound = {
+        "type": "trojan", 
+        "tag": "proxy", 
+        "server": parsed.hostname, 
+        "server_port": parsed.port or 443, 
+        "password": unquote(parsed.username or "")
+    }
+    
+    security = params.get("security", ["tls"])[0]
+    if security == "tls":
+        tls = {"enabled": True}
+        sni = params.get("sni", [""])[0]
+        if sni: tls["server_name"] = sni
+        fp = params.get("fp", [""])[0]
+        if fp: tls["utls"] = {"enabled": True, "fingerprint": fp}
+        alpn = params.get("alpn", [""])[0]
+        if alpn: tls["alpn"] = alpn.split(",")
+        insecure = params.get("insecure", params.get("allowInsecure", ["0"]))[0]
+        if insecure == "1": tls["insecure"] = True
+        outbound["tls"] = tls
+
+    net_type = params.get("type", ["tcp"])[0]
+    if net_type == "ws":
+        transport = {"type": "ws"}
+        path = params.get("path", [""])[0]
+        if path: transport["path"] = unquote(path)
+        host = params.get("host", [""])[0]
+        if host: transport["headers"] = {"Host": host}
+        outbound["transport"] = transport
+    elif net_type == "grpc":
+        transport = {"type": "grpc"}
+        sn = params.get("serviceName", [""])[0]
+        if sn: transport["service_name"] = sn
+        outbound["transport"] = transport
+    elif net_type in ("http", "h2"):
+        transport = {"type": "http"}
+        path = params.get("path", [""])[0]
+        if path: transport["path"] = unquote(path)
+        host = params.get("host", [""])[0]
+        if host: transport["host"] = [host]
+        outbound["transport"] = transport
+
+    return outbound
+
 def parse_vmess(url_str):
     encoded = url_str[len("vmess://"):]
     pad = 4 - len(encoded) % 4
@@ -94,6 +139,9 @@ def parse_vmess(url_str):
         elif cfg.get("host"): tls["server_name"] = cfg["host"]
         alpn = cfg.get("alpn", "")
         if alpn: tls["alpn"] = alpn.split(",")
+        # 修复: 增加对 fp (fingerprint) 的支持
+        fp = cfg.get("fp", "")
+        if fp: tls["utls"] = {"enabled": True, "fingerprint": fp}
         outbound["tls"] = tls
     net = cfg.get("net", "tcp")
     if net == "ws":
@@ -176,6 +224,7 @@ def parse_all_urls():
                 if scheme == "socks5": outbound = parse_socks5(parsed)
                 elif scheme in ("http", "https"): outbound = parse_http(parsed)
                 elif scheme == "vless": outbound = parse_vless(parsed, params)
+                elif scheme == "trojan": outbound = parse_trojan(parsed, params)
                 elif scheme in ("hy2", "hysteria2"): outbound = parse_hysteria2(parsed, params)
                 elif scheme == "tuic": outbound = parse_tuic(parsed, params)
                 else: print(f"⚠️ 忽略不支持的协议: {scheme}"); continue
@@ -232,7 +281,9 @@ if __name__ == "__main__":
             print(f"❌ 索引 {args.index} 超出节点范围")
             sys.exit(1)
     else:
-        # 默认行为：打印节点信息
+        # 默认行为：打印节点信息，同时隐藏最后一段 IP 和端口
         print(f"✅ 成功解析 {len(all_outbounds)} 个节点")
         for idx, ob in enumerate(all_outbounds):
-            print(f"  [{idx}] {ob['tag']} ({ob['type']}) -> {ob['server']}:{ob['server_port']}")
+            raw_addr = f"{ob['server']}:{ob['server_port']}"
+            masked_addr = re.sub(r'(\d+\.\d+\.\d+)\.\d+(:\d+)?', r'\1.*', raw_addr)
+            print(f"  [{idx}] {ob['tag']} ({ob['type']}) -> {masked_addr}")
