@@ -1,0 +1,68 @@
+name: FreeMCHost Auto Renew
+on:
+  schedule:
+    - cron: '0 */3 * * *'
+  workflow_dispatch:
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      # 显式设置 Python 环境，规避 Ubuntu 24.04 的 pip 限制
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          
+      # 新增：缓存 Python 依赖
+      - name: Cache Python dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      
+      # 新增：缓存 sing-box 二进制文件
+      - name: Cache sing-box
+        uses: actions/cache@v4
+        id: cache-singbox
+        with:
+          path: sing-box
+          key: ${{ runner.os }}-singbox-latest
+          restore-keys: |
+            ${{ runner.os }}-singbox-
+            
+      - name: Setup Environment
+        run: |
+          # 安装 Python 依赖
+          pip install seleniumbase aiohttp requests xvfbwrapper
+          
+          # 安装系统依赖
+          sudo apt-get update && sudo apt-get install -y xvfb xdotool unzip python3-tk python3-dev
+          
+          # 如果缓存未命中，下载并配置 sing-box
+          if [ ! -f sing-box ]; then
+            SB_URL=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep "browser_download_url.*linux-amd64.tar.gz" | cut -d '"' -f 4)
+            wget $SB_URL && tar -xvf *.tar.gz && mv sing-box-*/sing-box . && chmod +x sing-box
+          else
+            echo "sing-box already cached, skipping download"
+          fi
+        
+      - name: Run Auto Renew
+        env:
+          ACCOUNTS: ${{ secrets.FREEMCHOST_ACCOUNTS }} 
+          PROXY_URL: ${{ secrets.PROXY_URL }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python scripts/freemchost_renew.py
+        
+      # 新增：上传运行过程中产生的所有截图
+      #- name: Upload Debug Screenshots
+        #uses: actions/upload-artifact@v4
+        #if: always() # 无论前面的步骤成功还是失败，都执行此步骤
+        #with:
+          #name: freemchost-debug-screenshots
+          #path: "*.png"
+          #retention-days: 1 # 截图保留天数
