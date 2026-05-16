@@ -19,16 +19,30 @@ try:
 except ImportError:
     NACL_AVAILABLE = False
 
-LOGIN_URL = "https://freemchost.com/auth"
-BASE_URL = "https://freemchost.com/renew?id="
+# 从环境变量中读取链接配置，保护隐私
+LOGIN_URL = os.environ.get("LOGIN_URL")
+BASE_URL = os.environ.get("BASE_URL")
 
 # 获取当前脚本所在目录，用于定位同目录下的 proxy_handler.py
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROXY_HANDLER_PATH = os.path.join(SCRIPT_DIR, "proxy_handler.py")
 
 # ==============================================================================
-# 原有 FreeMCHost 辅助函数
+# 原有 FreeMCHost 辅助函数 & 脱敏函数
 # ==============================================================================
+def mask_ip(text):
+    """
+    匹配并掩码 IPv4 和端口。
+    例如: '204.12.204.4:4597' -> '204.12.204.***'
+          '204.12.204.4'      -> '204.12.204.***'
+    """
+    if not text: 
+        return text
+    # 匹配前三个网段、第四个网段以及可选的端口号
+    ip_pattern = r'\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.)\d{1,3}(:\d{1,5})?\b'
+    # 替换为 前三个网段 + ***
+    return re.sub(ip_pattern, r'\g<1>***', text)
+
 def mask_sensitive(text, show_chars=3):
     if not text: return "***"
     text = str(text)
@@ -145,11 +159,9 @@ def handle_cf_for_btn(sb, btn_selector):
 def login(sb, email, password):
     sb.uc_open_with_reconnect(LOGIN_URL, reconnect_time=3)
 
-    # --- 等待页面 ---
     print("[*] ⏳ 等待页面加载...")
     time.sleep(5)
 
-    # --- 关闭广告弹窗 ---
     try:
         if sb.is_element_visible('button.fc-close'):
             print("[*] 🖱️ 关闭广告弹窗...")
@@ -159,16 +171,11 @@ def login(sb, email, password):
     except Exception as e:
         print(f"[*] ⚠️ 弹窗处理异常: {e}")
 
-    # 已登录判断
     if "/auth" not in sb.get_current_url():
         return True
 
-    # =========================
-    # 🚀 输入账号（关键修复）
-    # =========================
     try:
         print("[*] ⌨️ 输入账号密码...")
-
         sb.click('input[type="email"]')
         sb.clear('input[type="email"]')
         sb.send_keys('input[type="email"]', email)
@@ -178,8 +185,6 @@ def login(sb, email, password):
         sb.send_keys('input[type="password"]', password)
 
         time.sleep(1)
-
-        # 强制触发事件（React/Vue 必须）
         sb.execute_script("""
             document.querySelectorAll('input').forEach(el => {
                 el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -191,17 +196,11 @@ def login(sb, email, password):
         print(f"❌ 输入失败: {e}")
         return False
 
-    # =========================
-    # 🚀 处理 CF
-    # =========================
     handle_cf_for_btn(sb, 'button[type="submit"]')
 
     print("[*] ⏳ 等待 CF 完成...")
     time.sleep(3)
 
-    # =========================
-    # 🚀 检查 CF token（关键调试）
-    # =========================
     try:
         cf_token = sb.execute_script("""
             let el = document.querySelector('[name="cf-turnstile-response"]');
@@ -211,9 +210,6 @@ def login(sb, email, password):
     except:
         print("[*] ⚠️ 获取 CF Token 失败")
 
-    # =========================
-    # 🚀 强制激活按钮（关键修复）
-    # =========================
     sb.execute_script("""
         let btn = document.querySelector('button[type="submit"]');
         if (btn) {
@@ -221,12 +217,8 @@ def login(sb, email, password):
             btn.removeAttribute('disabled');
         }
     """)
-
     time.sleep(1)
 
-    # =========================
-    # 🚀 点击登录
-    # =========================
     print("[*] 🖱️ 点击登录...")
     try:
         sb.execute_script("""
@@ -239,9 +231,6 @@ def login(sb, email, password):
         except:
             pass
 
-    # =========================
-    # 🚀 等待跳转
-    # =========================
     for i in range(10):
         time.sleep(1)
         if "/auth" not in sb.get_current_url():
@@ -252,30 +241,21 @@ def login(sb, email, password):
 def remove_ads(sb):
     for _ in range(5):
         sb.execute_script("""
-            // 1. 移除常见的对话框、模态框和弹窗
             document.querySelectorAll('div[role="dialog"], .modal, .popup').forEach(el => el.remove());
-
-            // 2. 根据特定文本移除广告
             document.querySelectorAll('div').forEach(el => {
                 if (el.innerText && el.innerText.includes('Unlock more content')) {
                     el.remove();
                 }
             });
-
-            // 3. 移除所有的 iframe (通常是第三方广告)
             document.querySelectorAll('iframe').forEach(el => el.remove());
-
-            // 4. 移除高 z-index 的固定元素 (合并进来的部分)
             document.querySelectorAll('*').forEach(el => {
                 let style = window.getComputedStyle(el);
                 if (style.position === 'fixed' && parseInt(style.zIndex) > 1000) {
                     el.remove();
                 }
             });
-
-            // 5. 恢复页面滚动能力
             document.body.style.overflow = 'auto';
-            document.documentElement.style.overflow = 'auto'; // 有些页面是在 html 标签上禁用的
+            document.documentElement.style.overflow = 'auto';
         """)
         time.sleep(0.5)
 
@@ -288,8 +268,6 @@ def do_renew(sb, server_id):
     remove_ads(sb)
     
     if "/auth" in sb.get_current_url(): return False
-
-
 
     try:
         present = sb.execute_script("return document.querySelector('.dismissModal') !== null || document.querySelector('.closeModal') !== null;")
@@ -374,13 +352,11 @@ def main():
     local_proxy_url = "http://127.0.0.1:8080"
     proxy_ready = False
     
-    # --- 修复 1：拦截环境变量，强制转换空格和换行为逗号，防多行 Secret 压缩 ---
     raw_proxy_url = os.environ.get("PROXY_URL", "").strip()
     if raw_proxy_url:
         fixed_proxy_url = re.sub(r'[\r\n\s]+', ',', raw_proxy_url)
         os.environ["PROXY_URL"] = fixed_proxy_url
     
-    # --- 修复 2：注入 UTF-8 环境，防止子进程打印 Emoji 报错退出 ---
     env_with_utf8 = os.environ.copy()
     env_with_utf8["PYTHONIOENCODING"] = "utf-8"
 
@@ -388,7 +364,8 @@ def main():
         print("\n📋 正在解析代理节点列表...")
         list_result = subprocess.run(['python', PROXY_HANDLER_PATH], capture_output=True, text=True, timeout=10, env=env_with_utf8)
         if list_result.returncode == 0 and "成功解析" in list_result.stdout:
-            print(list_result.stdout.strip())
+            # 使用 mask_ip 对子进程的输出内容进行脱敏处理
+            print(mask_ip(list_result.stdout.strip()))
         else:
             print("⚠️ 未能完全解析出节点列表或部分节点格式异常。")
         print("========================================")
@@ -433,21 +410,20 @@ def main():
 
             is_alive, ip_info = check_proxy_connectivity(local_proxy_url)
             if not is_alive:
-                print(f"🚫 节点 {node_idx} 代理不通 ({ip_info})，寻找下一个节点...")
+                print(f"🚫 节点 {node_idx} 代理不通 ({mask_ip(ip_info)})，寻找下一个节点...")
                 continue
             else:
-                print(f"✅ 节点 {node_idx} 代理连通正常！出口 IP: {ip_info}")
+                print(f"✅ 节点 {node_idx} 代理连通正常！出口 IP: {mask_ip(ip_info)}")
                 proxy_ready = True
                 break
     else:
         print("\n⚠️ 无可用代理节点配置，将直接使用 Action 原生网络")
 
-    # 打印最终将要使用的公网 IP
     print("\n🌐 正在确认当前浏览器会话的真实出口 IP...")
     try:
         proxies = {"http": local_proxy_url, "https": local_proxy_url} if proxy_ready else None
         current_ip = requests.get("https://api.ipify.org", proxies=proxies, timeout=5).text.strip()
-        print(f"👉 【最终出口 IP】: {current_ip} (代理状态: {'已开启' if proxy_ready else '直连'})")
+        print(f"👉 【最终出口 IP】: {mask_ip(current_ip)} (代理状态: {'已开启' if proxy_ready else '直连'})")
     except Exception as e:
         print(f"👉 【最终出口 IP】: 获取失败 ({e})")
     print("========================================\n")
@@ -487,7 +463,6 @@ def main():
                         print(f"[+] ✅ 续期成功！当前剩余时间: {format_remaining(result['remaining'])}")
                     else:
                         print(f"[-] ❌ 续期失败，未能通过验证或未找到按钮。")
-                        # --- 续期失败截图 ---
                         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                         screenshot_name = f"renew_failed_{remark}_{timestamp}.png"
                         try:
@@ -497,7 +472,6 @@ def main():
                             print(f"[*] ⚠️ 保存截图失败: {e}")
                 else:
                     print(f"[-] ❌ 登录失败，请检查账号密码或 CF 盾阻拦。")
-                    # --- 登录失败截图 ---
                     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                     screenshot_name = f"login_failed_{remark}_{timestamp}.png"
                     try:
