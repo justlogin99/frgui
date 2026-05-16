@@ -450,7 +450,7 @@ def main():
                 result = {"remark": remark, "server_id": server_id, "status": "error"}
                 
                 print(f"\n========================================")
-                print(f"[*] 开始处理账号: {remark}")
+                print(f"[*] 开始处理账号")
                 print(f"[*] 正在尝试登录...")
                 
                 if login(sb, account.get("email"), account.get("password")):
