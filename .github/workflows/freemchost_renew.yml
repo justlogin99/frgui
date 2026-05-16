@@ -59,7 +59,7 @@ jobs:
           # 动态传入登录页与续期页链接
           LOGIN_URL: ${{ secrets.LOGIN_URL }}
           BASE_URL: ${{ secrets.BASE_URL }}
-        run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python scripts/freemchost_renew.py
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python scripts/renew.py
         
       # 新增：上传运行过程中产生的所有截图
       #- name: Upload Debug Screenshots
