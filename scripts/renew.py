@@ -11,6 +11,7 @@ import subprocess
 import json
 import datetime
 import requests
+from urllib.parse import urlparse
 from seleniumbase import SB
 
 try:
@@ -85,7 +86,7 @@ def get_remaining_seconds(sb):
         return None
 
 def format_remaining(seconds):
-    if seconds is None: return "unknown"
+    if seconds is None: return "unknown (刚开机或解析失败)"
     if seconds <= 0: return "expired"
     h, m, s = seconds // 3600, (seconds % 3600) // 60, seconds % 60
     if h > 0: return f"{str(h).zfill(2)}:{str(m).zfill(2)}:{str(s).zfill(2)}"
@@ -156,6 +157,27 @@ def handle_cf_for_btn(sb, btn_selector):
             if is_btn_enabled(sb, btn_selector): return True
     return False
 
+def remove_ads(sb):
+    for _ in range(5):
+        sb.execute_script("""
+            document.querySelectorAll('div[role="dialog"], .modal, .popup').forEach(el => el.remove());
+            document.querySelectorAll('div').forEach(el => {
+                if (el.innerText && el.innerText.includes('Unlock more content')) {
+                    el.remove();
+                }
+            });
+            document.querySelectorAll('iframe').forEach(el => el.remove());
+            document.querySelectorAll('*').forEach(el => {
+                let style = window.getComputedStyle(el);
+                if (style.position === 'fixed' && parseInt(style.zIndex) > 1000) {
+                    el.remove();
+                }
+            });
+            document.body.style.overflow = 'auto';
+            document.documentElement.style.overflow = 'auto';
+        """)
+        time.sleep(0.5)
+
 def login(sb, email, password):
     sb.uc_open_with_reconnect(LOGIN_URL, reconnect_time=3)
 
@@ -201,15 +223,6 @@ def login(sb, email, password):
     print("[*] ⏳ 等待 CF 完成...")
     time.sleep(3)
 
-    try:
-        cf_token = sb.execute_script("""
-            let el = document.querySelector('[name="cf-turnstile-response"]');
-            return el ? el.value : null;
-        """)
-        print(f"[*] CF Token: {cf_token}")
-    except:
-        print("[*] ⚠️ 获取 CF Token 失败")
-
     sb.execute_script("""
         let btn = document.querySelector('button[type="submit"]');
         if (btn) {
@@ -238,37 +251,22 @@ def login(sb, email, password):
 
     return False
 
-def remove_ads(sb):
-    for _ in range(5):
-        sb.execute_script("""
-            document.querySelectorAll('div[role="dialog"], .modal, .popup').forEach(el => el.remove());
-            document.querySelectorAll('div').forEach(el => {
-                if (el.innerText && el.innerText.includes('Unlock more content')) {
-                    el.remove();
-                }
-            });
-            document.querySelectorAll('iframe').forEach(el => el.remove());
-            document.querySelectorAll('*').forEach(el => {
-                let style = window.getComputedStyle(el);
-                if (style.position === 'fixed' && parseInt(style.zIndex) > 1000) {
-                    el.remove();
-                }
-            });
-            document.body.style.overflow = 'auto';
-            document.documentElement.style.overflow = 'auto';
-        """)
-        time.sleep(0.5)
-
-
-def do_renew(sb, server_id):
-    renew_url = server_id if server_id.startswith("http") else BASE_URL + server_id
+# ==============================================================================
+# 新增: 拆分的动作函数 (执行续期 / 流程总控)
+# ==============================================================================
+def execute_renew(sb, base_domain, server_id):
+    """纯粹的续期动作"""
+    renew_url = f"{base_domain}/renew?id={server_id}"
+    print(f"[*] 🚀 跳转至续期页面: {renew_url}")
     sb.uc_open_with_reconnect(renew_url, reconnect_time=3)
     time.sleep(2)
 
+    print("[*] 🖱️ 清理页面广告遮罩...")
     remove_ads(sb)
     
     if "/auth" in sb.get_current_url(): return False
 
+    # 应对偶尔出现的弹窗
     try:
         present = sb.execute_script("return document.querySelector('.dismissModal') !== null || document.querySelector('.closeModal') !== null;")
         if present:
@@ -276,6 +274,7 @@ def do_renew(sb, server_id):
             time.sleep(0.5)
     except: pass
 
+    # 处理盾并点击续期
     handle_cf_for_btn(sb, '#renewSessionBtn')
     
     ready = False
@@ -285,8 +284,11 @@ def do_renew(sb, server_id):
             break
         time.sleep(1)
 
-    if not ready: return False
+    if not ready: 
+        print("[-] ⚠️ 续期按钮不可用。")
+        return False
 
+    print("[*] 🖱️ 点击续期按钮...")
     sb.execute_script("document.getElementById('renewSessionBtn').click();")
     
     for i in range(10):
@@ -297,6 +299,78 @@ def do_renew(sb, server_id):
         except: pass
     return True
 
+def process_server(sb, server_id):
+    """
+    总控逻辑：探针测试状态 -> 决定启动或续期
+    """
+    # 动态解析域名，防止环境变量带了多余的 /renew?id=
+    raw_base = BASE_URL if BASE_URL else "https://freemchost.com"
+    parsed_base = urlparse(raw_base)
+    base_domain = f"{parsed_base.scheme}://{parsed_base.netloc}"
+
+    if server_id.startswith("http"):
+        print("[*] ⚠️ 账号配置中直接提供了完整链接，回退到纯续期模式...")
+        return execute_renew(sb, base_domain, server_id)
+    
+    # 1. 强制跳转 /start 探针页面
+    start_url = f"{base_domain}/start?id={server_id}"
+    print(f"[*] 🔍 探测服务器状态: {start_url}")
+    sb.uc_open_with_reconnect(start_url, reconnect_time=3)
+    time.sleep(2)
+
+    # 不去广告，直接静默读取页面文本
+    try:
+        page_text = sb.execute_script("return document.body.innerText;")
+    except:
+        page_text = ""
+
+    # 2. 状态分发
+    if "Already Active !" in page_text:
+        print("[*] 🟢 状态：服务器运行中 (Already Active !)")
+        # 正常状态，转入续期流程
+        return execute_renew(sb, base_domain, server_id)
+
+    elif "Ready to start" in page_text:
+        print("[*] 🔴 状态：服务器睡眠中 (Ready to start)，准备执行开机...")
+        remove_ads(sb)
+        
+        handle_cf_for_btn(sb, '#launch-btn')
+        
+        try:
+            sb.execute_script("document.getElementById('launch-btn').click();")
+            print("[*] 🖱️ 发送开机指令完成。")
+        except Exception as e:
+            print(f"[-] ❌ 点击开机按钮失败: {e}")
+            return False
+
+        print("[*] ⏳ 等待面板下发指令 (5s)...")
+        time.sleep(5)
+        
+        for attempt in range(1, 4):
+            print(f"[*] 🔄 第 {attempt}/3 次刷新确认状态...")
+            sb.uc_open_with_reconnect(start_url, reconnect_time=3)
+            time.sleep(2)
+            
+            try:
+                check_text = sb.execute_script("return document.body.innerText;")
+                if "Already Active !" in check_text:
+                    print("[+] ✅ 开机成功！(开机自动完成续期)")
+                    return True
+            except: pass
+            
+            if attempt < 3:
+                time.sleep(5)
+
+        print("[-] ❌ 经过 3 次刷新，服务器仍未显示开机成功状态。")
+        return False
+        
+    else:
+        print("[-] ⚠️ 状态未知，尝试强行走续期流程。")
+        return execute_renew(sb, base_domain, server_id)
+
+# ==============================================================================
+# TG 通知与代理模块
+# ==============================================================================
 async def tg_notify(message):
     token, chat_id = os.environ.get("TG_BOT_TOKEN"), os.environ.get("TG_CHAT_ID")
     if not token or not chat_id: return
@@ -304,27 +378,23 @@ async def tg_notify(message):
         try: await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"})
         except: pass
 
-# ==============================================================================
-# 代理服务模块
-# ==============================================================================
 def restart_singbox():
-    print("♻️ 正在重启 sing-box...")
+    print("♻️ 正在重启 proxy (Xray/sing-box)...")
     try:
+        # 由于用户历史上曾提出将底层切换为Xray，兼容保留相关进程处理。
+        # 此处不干涉外层进程，维持 pkill -f sing-box 逻辑不变，以保证 Action 兼容
         subprocess.run(['pkill', '-f', 'sing-box run'], stderr=subprocess.DEVNULL)
         time.sleep(2)
         subprocess.Popen(['./sing-box', 'run', '-c', 'config.json'], stdout=open('singbox.log', 'a'), stderr=subprocess.STDOUT)
         time.sleep(5)
         check_process = subprocess.run(['pgrep', '-f', 'sing-box run'], stdout=subprocess.DEVNULL)
         if check_process.returncode != 0:
-            print("❌ sing-box 启动失败！")
-            try:
-                with open("singbox.log", "r") as f: print(f.read()[-500:])
-            except: pass
+            print("❌ 代理核心启动失败！")
             return False
-        print("✅ sing-box 重启成功")
+        print("✅ 代理核心重启成功")
         return True
     except Exception as e:
-        print(f"❌ 重启 sing-box 异常: {e}")
+        print(f"❌ 重启代理核心异常: {e}")
         return False
 
 def check_proxy_connectivity(proxy_url, max_retries=2, timeout=5):
@@ -364,7 +434,6 @@ def main():
         print("\n📋 正在解析代理节点列表...")
         list_result = subprocess.run(['python', PROXY_HANDLER_PATH], capture_output=True, text=True, timeout=10, env=env_with_utf8)
         if list_result.returncode == 0 and "成功解析" in list_result.stdout:
-            # 使用 mask_ip 对子进程的输出内容进行脱敏处理
             print(mask_ip(list_result.stdout.strip()))
         else:
             print("⚠️ 未能完全解析出节点列表或部分节点格式异常。")
@@ -450,24 +519,27 @@ def main():
                 result = {"remark": remark, "server_id": server_id, "status": "error"}
                 
                 print(f"\n========================================")
-                print(f"[*] 开始处理账号")
+                print(f"[*] 开始处理账号: {remark}")
                 print(f"[*] 正在尝试登录...")
                 
                 if login(sb, account.get("email"), account.get("password")):
                     print(f"[+] ✅ 登录成功！")
-                    print(f"[*] 正在尝试执行续期...")
-                    if do_renew(sb, server_id):
+                    print(f"[*] 正在执行服务器状态检测与操作流程...")
+                    
+                    if process_server(sb, server_id):
                         time.sleep(3)
                         result["status"] = "success"
                         result["remaining"] = get_remaining_seconds(sb)
-                        print(f"[+] ✅ 续期成功！当前剩余时间: {format_remaining(result['remaining'])}")
+                        
+                        rem_text = format_remaining(result['remaining'])
+                        print(f"[+] ✅ 流程结束，操作成功！当前剩余时间/状态: {rem_text}")
                     else:
-                        print(f"[-] ❌ 续期失败，未能通过验证或未找到按钮。")
+                        print(f"[-] ❌ 流程失败，可能是未找到节点、卡弹窗或验证码阻拦。")
                         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                        screenshot_name = f"renew_failed_{remark}_{timestamp}.png"
+                        screenshot_name = f"process_failed_{remark}_{timestamp}.png"
                         try:
                             sb.save_screenshot(screenshot_name)
-                            print(f"[*] 📸 已保存续期失败截图: {screenshot_name}")
+                            print(f"[*] 📸 已保存操作失败截图: {screenshot_name}")
                         except Exception as e:
                             print(f"[*] ⚠️ 保存截图失败: {e}")
                 else:
@@ -489,11 +561,12 @@ def main():
         asyncio.run(tg_notify(error_msg))
         return
 
-    lines = ["<b>FreeMCHost Renew</b>", ""]
+    lines = ["<b>FreeMCHost Auto-Runner</b>", ""]
     for r in results:
         icon = "✅" if r["status"] == "success" else "❌"
         lines.append(f"{icon} {r['remark']}")
-        if r["status"] == "success": lines.append(f"  Remaining: {format_remaining(r.get('remaining'))}")
+        if r["status"] == "success": 
+            lines.append(f"  Status/Remaining: {format_remaining(r.get('remaining'))}")
     asyncio.run(tg_notify("\n".join(lines)))
 
 if __name__ == "__main__":
