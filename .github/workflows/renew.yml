@@ -1,10 +1,10 @@
-name: FreeMCHost 自动续期3.0
+name: FreeMCHost 自动续期
 
 on:
   schedule:
-    # 每天 UTC 08:00 运行（北京时间 16:00）
-    - cron: "0 8 * * *"
-  workflow_dispatch:  # 支持手动触发
+    # 每天 UTC 00:00 运行（北京时间 08:00）
+    - cron: "0 0 * * *"
+  workflow_dispatch:
 
 jobs:
   renew:
@@ -19,9 +19,20 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests
+        run: |
+          pip install playwright
+          playwright install chromium
+          playwright install-deps chromium
 
       - name: Run renew script
         env:
           ACCOUNTS: ${{ secrets.ACCOUNTS }}
         run: python renew.py
+
+      - name: Upload debug screenshot (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshot
+          path: /tmp/debug.png
+          if-no-files-found: ignore
