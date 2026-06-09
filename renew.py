@@ -22,6 +22,27 @@ log = logging.getLogger(__name__)
 BASE_URL = "https://new.freemchost.com"
 
 
+def mask_email(email: str) -> str:
+    """脱敏邮箱：保留首字符和@后域名首字符，其余替换为*
+    例: justloginvip@proton.me → j**********@p*****.me
+    """
+    if "@" not in email:
+        return "***"
+    local, domain = email.split("@", 1)
+    masked_local = local[0] + "*" * (len(local) - 1) if len(local) > 1 else "*"
+    domain_parts = domain.split(".")
+    masked_domain = domain_parts[0][0] + "*" * (len(domain_parts[0]) - 1)
+    suffix = "." + ".".join(domain_parts[1:]) if len(domain_parts) > 1 else ""
+    return f"{masked_local}@{masked_domain}{suffix}"
+
+
+def mask_server_id(server_id: str) -> str:
+    """脱敏 ServerID：只显示前8位
+    例: 56059b0f-9531-4443-... → 56059b0f...
+    """
+    return server_id[:8] + "..." if len(server_id) > 8 else server_id
+
+
 def parse_time_text(text: str) -> str:
     """从页面 aria-label 或文本中提取剩余时间"""
     # 匹配 "1d 23h 34m 12s remaining"
@@ -52,7 +73,7 @@ def get_remaining_time(page) -> str:
 
 def process_account(email: str, password: str, server_id: str) -> bool:
     log.info("=" * 55)
-    log.info(f"账号: {email}  ServerID: {server_id}")
+    log.info(f"账号: {mask_email(email)}  ServerID: {mask_server_id(server_id)}")
 
     manage_url = f"{BASE_URL}/app/servers/{server_id}"
 
@@ -195,7 +216,7 @@ def main():
     all_ok = True
     for email, sid, ok in results:
         status = "✅ 成功" if ok else "❌ 失败"
-        log.info(f"  {email} [{sid[:8]}...]: {status}")
+        log.info(f"  {mask_email(email)} [{mask_server_id(sid)}]: {status}")
         if not ok:
             all_ok = False
 
